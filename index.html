@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harita Görüntüleyici</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body {
+      display: flex;
+    }
+    #map {
+      height: 100vh;
+      width: 80%;
+    }
+    #coords {
+      width: 20%;
+      padding: 10px;
+      background: #f4f4f4;
+      overflow-y: auto;
+    }
+    .custom-label {
+      font-weight: bold;
+      color: black;
+      pointer-events: none;
+      font-size: 16px;
+      text-align: center;
+      line-height: 38px;
+      width: 38px;
+      height: 62px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: transparent;
+    }
+    .coord-item {
+      margin-bottom: 5px;
+      padding: 5px;
+      border: 1px solid black;
+      border-radius: 3px;
+      background: white;
+    }
+    .toolbar {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 5px;
+      border: 1px solid black;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div id="coords">
+    <h3>Seçilen Koordinatlar</h3>
+    <div id="coordList"></div>
+  </div>
+  <div id="map"></div>
+  <div class="toolbar">
+    <button id="circleModeBtn">Daire Modu</button>
+    <div id="radiusInputContainer" style="display:none;">
+      <input type="number" id="radiusInput" placeholder="Yarıçap (m)">
+      <button id="setRadiusBtn">Yarıçapı Ayarla</button>
+      <select id="directionSelect">
+        <option value="right">Sağdan</option>
+        <option value="left">Soldan</option>
+      </select>
+    </div>
+  </div>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    var map = L.map('map').setView([39.4242, 29.9833], 13); // Kütahya koordinatları
+
+    L.tileLayer('https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}', {
+      maxZoom: 20,
+      subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+      attribution: '&copy; <a href="https://www.google.com/intl/en_us/help/terms_maps.html">Google</a>'
+    }).addTo(map);
+
+    var markers = [];
+    var labels = [];
+    var lines = [];
+    var markerCount = 0;
+    var circleMode = false;
+    var circleRadius = null;
+    var lastCircleCoord; // Daire modundaki en son koordinat
+    var lastCoordBeforeCircleMode; // Daire moduna geçmeden önceki en büyük numaralı koordinat
+    var lastGlobalCoord; // Son eklenen global koordinatı tutar
+
+    document.getElementById('circleModeBtn').addEventListener('click', function() {
+      circleMode = !circleMode;
+      document.getElementById('radiusInputContainer').style.display = circleMode ? 'block' : 'none';
+      this.textContent = circleMode ? 'Daire Modu Aktif' : 'Daire Modu';
+    });
+
+    document.getElementById('setRadiusBtn').addEventListener('click', function() {
+      var radiusValue = parseFloat(document.getElementById('radiusInput').value);
+      if (!isNaN(radiusValue) && radiusValue > 0) {
+        circleRadius = radiusValue;
+        alert("Yarıçap " + circleRadius + " metre olarak ayarlandı.");
+      } else {
+        alert('Geçerli bir yarıçap girin.');
+      }
+    });
+
+    map.on('click', function(e) {
+      if (circleMode && circleRadius) {
+        // Daire çiz, ancak merkeze koordinat ekleme
+        var circle = L.circle(e.latlng, {
+          radius: circleRadius,
+          color: 'yellow',
+          fillColor: 'yellow',
+          fillOpacity: 0.1
+        }).addTo(map);
+
+        // Daire etrafındaki noktaları oluştur
+        var nearestCoord = addPointsOnCircle(e.latlng, circleRadius);
+
+        // Daire modunun sonuncu koordinatı güncellenir
+        lastCircleCoord = nearestCoord; 
+
+        // Daire modundan çıkınca son koordinat güncellenir
+        if (lastCoordBeforeCircleMode) {
+          drawLineBetween(lastCoordBeforeCircleMode, nearestCoord); // Çizgiyi çizer
+        }
+
+        // Daire modundan çıkış yapıldıktan sonra son koordinat güncelle
+        lastCoordBeforeCircleMode = nearestCoord; // Son koordinat, daire modundaki en son nokta
+        lastGlobalCoord = nearestCoord; // En son global noktayı da güncelle
+        circleMode = false; // Daire modunu kapat
+        document.getElementById('radiusInputContainer').style.display = 'none';
+
+      } else {
+        // Normal modda koordinat ekleme
+        markerCount++;
+        var marker = L.marker(e.latlng).addTo(map);
+        markers.push(marker);
+
+        var label = L.divIcon({
+          className: 'custom-label',
+          html: '<div>' + markerCount + '</div>',
+          iconSize: [38, 62],
+          iconAnchor: [19, 71]
+        });
+
+        var labelMarker = L.marker([e.latlng.lat, e.latlng.lng], {icon: label}).addTo(map);
+        labels.push(labelMarker);
+        addCoordToList(e.latlng, markerCount);
+
+        // Eğer daha önce bir nokta eklenmişse, yeni noktayı son eklenen noktaya bağla
+        if (lastGlobalCoord) {
+          drawLineBetween(lastGlobalCoord, e.latlng);
+        }
+
+        // Son noktayı güncelle
+        lastGlobalCoord = e.latlng;
+        lastCoordBeforeCircleMode = e.latlng;  // Normal modda güncel nokta
+      }
+    });
+
+    function addPointsOnCircle(center, radius) {
+      var points = 8; 
+      var angleIncrement = (2 * Math.PI) / points;
+      var pointCoords = [];
+      var nearestCoord = null;
+
+      // Daire etrafındaki noktaları oluştur
+      for (var i = 0; i < points; i++) {
+        var angle = i * angleIncrement;
+        var lat = center.lat + (radius / 111320) * Math.sin(angle);
+        var lng = center.lng + (radius / (111320 * Math.cos(center.lat * (Math.PI / 180)))) * Math.cos(angle);
+        var point = L.latLng(lat, lng);
+        pointCoords.push(point);
+      }
+
+      // Mevcut noktanın en yakınına göre en küçük numarayı ata
+      var usedPoints = [];
+      var currentCoord = lastCoordBeforeCircleMode;  // Başlangıçta daireden önceki son bilinen koordinatı al
+      var coordNumber = markerCount + 1;  // Son numaranın üzerine devam edecek
+
+      var firstCirclePoint = null;  // Daire üzerindeki ilk nokta
+      var lastCirclePoint = null;  // Daire üzerindeki en son nokta
+
+      for (var j = 0; j < points; j++) {
+        // Her adımda en yakın noktayı bul
+        var closestPoint = null;
+        var minDistance = Infinity;
+
+        pointCoords.forEach((point, index) => {
+          if (!usedPoints.includes(index)) {  // Eğer bu nokta daha önce kullanılmadıysa
+            var distance = map.distance(currentCoord, point);  // Mevcut noktaya olan uzaklığı hesapla
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestPoint = point;
+              nearestCoordIndex = index;
+            }
+          }
+        });
+
+        // En yakın noktayı kullanılmış olarak işaretle ve yeni bir marker ekle
+        usedPoints.push(nearestCoordIndex);
+        currentCoord = closestPoint;
+        markerCount++;  // Her yeni nokta için sayacı artır
+
+        // İlk daire noktasını belirle (ilk döngüde)
+        if (j === 0) {
+          firstCirclePoint = closestPoint;
+        }
+
+        // Noktaya marker ekle
+        var marker = L.marker(closestPoint).addTo(map);
+
+        var label = L.divIcon({
+          className: 'custom-label',
+          html: '<div>' + markerCount + '</div>',
+          iconSize: [38, 62],
+          iconAnchor: [19, 71]
+        });
+
+        L.marker(closestPoint, { icon: label }).addTo(map);
+        addCoordToList(closestPoint, markerCount);
+
+        // Önceki nokta ile yeni nokta arasında çizgi çiz
+        if (j > 0) {  // Daire üzerindeki noktaları birbirine bağlama
+          drawLineBetween(lastCirclePoint, closestPoint);
+        }
+
+        // Son eklenen noktayı lastCirclePoint olarak güncelle
+        lastCirclePoint = closestPoint;
+      }
+
+      // Dairedeki ilk noktayı normal pointer ile bağla (normal pointer -> daire pointer)
+      if (lastCoordBeforeCircleMode && firstCirclePoint) {
+        drawLineBetween(lastCoordBeforeCircleMode, firstCirclePoint);  // Dairenin ilk noktasını bağla
+      }
+
+      // Daire modunda eklenen son noktayı güncelle
+      lastCoordBeforeCircleMode = lastCirclePoint;  // Dairedeki en son noktayı güncelle
+      lastGlobalCoord = lastCirclePoint;  // En son global noktayı da güncelle
+
+      return lastCoordBeforeCircleMode;
+    }
+
+    function addCoordToList(coord, number) {
+      var coordList = document.getElementById('coordList');
+      var coordItem = document.createElement('div');
+      coordItem.className = 'coord-item';
+      coordItem.textContent = 'Koordinat ' + number + ': ' + coord.lat.toFixed(5) + ', ' + coord.lng.toFixed(5);
+      coordList.appendChild(coordItem);
+    }
+
+    function drawLineBetween(latlng1, latlng2) {
+      var line = L.polyline([latlng1, latlng2], { color: 'blue' }).addTo(map);
+      lines.push(line);
+    }
+  </script>
+</body>
+</html>
